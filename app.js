@@ -14,7 +14,7 @@ import authRouter from './routes/auth/auth.rout.js';
 import adminRouter from './routes/admin/admin.rout.js';
 
 import user from './routes/user/user.rout.js';
-// import { authMiddleware } from "./middleware/auth.middleware.js";
+import { authMiddleware } from "./middlewares/auth.middlewares.js";
 // middleware
 //routs
 
@@ -55,10 +55,10 @@ app.get("/", (req, res) => {
 app.use("/api/v1/auth", authRouter);
 // admin routes
 
-app.use("/api/v1/admin", adminRouter);
+app.use("/api/v1/admin",authMiddleware, adminRouter);
 
 // user routes
-app.use("/api/v1/user", user);
+app.use("/api/v1/user", authMiddleware, user);
 
 // Google Drive image proxy (top-level path under /api/v1)
 app.get("/api/v1/google-image/:id", (req, res) => {

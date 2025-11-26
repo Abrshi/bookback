@@ -15,31 +15,34 @@ const generateAccessToken = (user) =>
   );
 
 const generateRefreshToken = () =>
-  crypto.randomBytes(64).toString("hex"); // random string
+  crypto.randomBytes(64).toString("hex");
 
 const hashToken = (token) =>
   crypto.createHash("sha256").update(token).digest("hex");
 
 // ---------------- Cookie Options ----------------
-const cookieOptions = {
+const accessCookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "strict",
+  maxAge: 5 * 60 * 1000, // 5 minutes
+};
+
+const refreshCookieOptions = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
   sameSite: "strict",
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
 };
 
+
 // ---------------- SignUp ----------------
 export const signUp = async (req, res) => {
   const { fullName, email, password } = req.body;
-  console.log(fullName, email, password);
-
-  if (!fullName || !email || !password)
-    return res.status(400).json({ error: "Full name, email, and password are required" });
 
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing)
-      return res.status(409).json({ error: "This email is already registered" });
+    if (existing) return res.status(409).json({ error: "Email already exists" });
 
     const passwordHash = await bcrypt.hash(password, 12);
 
@@ -47,7 +50,6 @@ export const signUp = async (req, res) => {
       data: { fullName, email, passwordHash },
     });
 
-    const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
     const hashedRefreshToken = hashToken(refreshToken);
 
@@ -55,61 +57,67 @@ export const signUp = async (req, res) => {
       data: { userId: user.id, refreshToken: hashedRefreshToken },
     });
 
+    const accessToken = generateAccessToken(user);
+
     res
-      .cookie("refreshToken", refreshToken, cookieOptions)
+      .cookie("accessToken", accessToken, accessCookieOptions)
+      .cookie("refreshToken", refreshToken, refreshCookieOptions)
       .status(201)
       .json({
-        message: `Signup successful! Welcome aboard, ${user.fullName.split(" ")[0]}!`,
-        accessToken,
+        message: "User created",
         user: {
           id: user.id,
           fullName: user.fullName,
           email: user.email,
-          role: user.role,
-        },
+          role: user.role
+        }
       });
+
   } catch (err) {
-    console.error("Signup error:", err);
-    res.status(500).json({ error: "Internal server error during signup" });
+    res.status(500).json({ error: "Server error" });
   }
 };
+
 
 
 // ---------------- SignIn ----------------
 export const signIn = async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password)
-    return res.status(400).json({ error: "Email and password are required" });
-
   try {
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user)
-      return res.status(401).json({ error: "No account found with this email" });
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
     const isMatch = await bcrypt.compare(password, user.passwordHash);
-    if (!isMatch)
-      return res.status(401).json({ error: "Incorrect password" });
+    if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
 
     const accessToken = generateAccessToken(user);
+
     const refreshToken = generateRefreshToken();
     const hashedRefreshToken = hashToken(refreshToken);
-  
+
     await prisma.session.create({
       data: { userId: user.id, refreshToken: hashedRefreshToken },
     });
 
     res
-      .cookie("refreshToken", refreshToken, cookieOptions)
+      .cookie("accessToken", accessToken, accessCookieOptions)
+      .cookie("refreshToken", refreshToken, refreshCookieOptions)
       .json({
-        accessToken,
-        user,        
+        message: "Logged in",
+        user: {
+          id: user.id,
+          fullName: user.fullName,
+          email: user.email,
+          role: user.role
+        }
       });
+
   } catch (err) {
-    console.error("Login error:", err);
-    res.status(500).json({ error: "Internal server error during login" });
+    res.status(500).json({ error: "Server error" });
   }
 };
+
 
 //----------------- Get Current User ----------------
 export const getMe = async (req, res) => {
@@ -136,54 +144,54 @@ export const getMe = async (req, res) => {
 };
 
 
+
 // ---------------- Refresh Token ----------------
 export const refreshToken = async (req, res) => {
   const token = req.cookies.refreshToken;
-  if (!token) return res.status(401).json({ error: "No refresh token provided" });
+  if (!token) return res.status(401).json({ error: "No refresh token" });
 
   try {
     const hashedToken = hashToken(token);
 
     const session = await prisma.session.findFirst({
       where: { refreshToken: hashedToken },
-      include: { user: true },
+      include: { user: true }
     });
 
-    if (!session)
-      return res.status(403).json({ error: "Refresh token is invalid or expired" });
+    if (!session) return res.status(403).json({ error: "Invalid refresh token" });
 
-    // Rotate refresh token
     const newRefreshToken = generateRefreshToken();
     const newHashedToken = hashToken(newRefreshToken);
 
     await prisma.session.update({
       where: { id: session.id },
-      data: { refreshToken: newHashedToken },
+      data: { refreshToken: newHashedToken }
     });
 
-    const accessToken = generateAccessToken(session.user);
+    const newAccessToken = generateAccessToken(session.user);
 
     res
-      .cookie("refreshToken", newRefreshToken, cookieOptions)
-      .json({ accessToken });
+      .cookie("accessToken", newAccessToken, accessCookieOptions)
+      .cookie("refreshToken", newRefreshToken, refreshCookieOptions)
+      .json({ message: "Token refreshed" });
+
   } catch (err) {
-    console.error("Refresh token error:", err);
-    res.status(500).json({ error: "Internal server error during token refresh" });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
 // ---------------- Logout ----------------
 export const logout = async (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
-  if (!refreshToken) return res.sendStatus(204);
+  const token = req.cookies.refreshToken;
 
-  try {
-    const hashedToken = hashToken(refreshToken);
-    await prisma.session.deleteMany({ where: { refreshToken: hashedToken } });
-    res.clearCookie("refreshToken", cookieOptions);
-    res.json({ message: "Logged out successfully" });
-  } catch (err) {
-    console.error("Logout error:", err);
-    res.status(500).json({ error: "Internal server error during logout" });
+  if (token) {
+    await prisma.session.deleteMany({
+      where: { refreshToken: hashToken(token) }
+    });
   }
+
+  res
+    .clearCookie("accessToken", accessCookieOptions)
+    .clearCookie("refreshToken", refreshCookieOptions)
+    .json({ message: "Logged out" });
 };
